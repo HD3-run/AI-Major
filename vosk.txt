@@ -1,0 +1,300 @@
+import os
+import subprocess
+import webbrowser
+import time
+import pyttsx3
+import pyautogui
+import screen_brightness_control as sbc  # For brightness control
+from fuzzywuzzy import process, fuzz
+import spacy  # Local NLP with spaCy
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume  # For volume control
+
+# For offline speech recognition using Vosk:
+from vosk import Model, KaldiRecognizer
+import pyaudio
+import json
+
+# Load spaCy English model
+nlp = spacy.load("en_core_web_sm")
+
+# Initialize text-to-speech engine
+engine = pyttsx3.init()
+
+# Global variable to track the active application context.
+active_app = None
+
+def speak(text):
+    """Converts text to speech."""
+    engine.say(text)
+    engine.runAndWait()
+
+def listen_command():
+    """
+    Uses Vosk for offline speech recognition.
+    The model is loaded from an absolute path.
+    """
+    model_local = Model("C:/Users/USER/Desktop/C2/model/vosk-model-small-en-us-0.15")
+    recognizer = KaldiRecognizer(model_local, 16000)
+    p = pyaudio.PyAudio()
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000,
+                    input=True, frames_per_buffer=8192)
+    stream.start_stream()
+    
+    speak("Speak...")
+    print("Listening offline...")
+    result_text = ""
+    start_time = time.time()
+
+    # Listen for 10 seconds or until a result is returned
+    while True:
+        data = stream.read(4096, exception_on_overflow=False)
+        if recognizer.AcceptWaveform(data):
+            res = recognizer.Result()
+            res_dict = json.loads(res)
+            result_text = res_dict.get("text", "")
+            if result_text:
+                break
+        if time.time() - start_time > 10:
+            break
+
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
+    if result_text:
+        print("You said:", result_text)
+        return result_text.lower()
+    else:
+        speak("Could you repeat that?")
+        return ""
+
+# --- System Operation Functions ---
+
+def set_volume(level):
+    """Sets system volume to the requested percentage."""
+    speak(f"Setting volume to {level}%.")
+    devices = AudioUtilities.GetSpeakers()
+    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    volume = cast(interface, POINTER(IAudioEndpointVolume))
+    volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+
+def adjust_brightness(level):
+    """Sets screen brightness to the requested percentage."""
+    speak(f"Adjusting brightness to {level}%.")
+    sbc.set_brightness(level)
+
+def open_application(app_name):
+    """
+    Opens an application dynamically.
+    After launching, sets active_app to the name of the app.
+    """
+    global active_app
+    speak(f"Opening {app_name}.")
+    try:
+        subprocess.Popen([app_name])
+        active_app = app_name.lower()
+    except FileNotFoundError:
+        speak(f"I couldn't find {app_name}. Make sure it's installed.")
+    except Exception as e:
+        speak(f"Failed to open {app_name}. Error: {str(e)}")
+
+def open_website(website_name):
+    """
+    Opens a website in the browser.
+    For YouTube, it reuses the same tab (new=0) and sets active_app to "youtube".
+    """
+    global active_app
+    speak(f"Opening {website_name}.")
+    base_urls = {
+        "youtube": "https://www.youtube.com",
+        "google": "https://www.google.com",
+        "github": "https://github.com",
+        "twitter": "https://twitter.com"
+    }
+    url = base_urls.get(website_name.lower(), f"https://www.{website_name}.com")
+    webbrowser.open(url, new=0)
+    if website_name.lower() == "youtube":
+        active_app = "youtube"
+    else:
+        active_app = website_name.lower()
+
+def search_youtube(query):
+    """
+    Searches YouTube for the given query.
+    If YouTube is the active app, reuses the same tab (new=0);
+    otherwise, opens a new tab and sets active_app to "youtube".
+    """
+    global active_app
+    speak(f"Searching YouTube for {query}.")
+    search_url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+    if active_app == "youtube":
+        webbrowser.open(search_url, new=0)
+    else:
+        webbrowser.open(search_url, new=2)
+        active_app = "youtube"
+
+def open_notepad_and_write(text="Hello, this is CS2P speaking."):
+    """
+    Opens Notepad, sets it as the active app, and writes provided text using PyAutoGUI.
+    """
+    global active_app
+    speak("Opening Notepad and typing.")
+    subprocess.Popen(["notepad.exe"])
+    time.sleep(2)  # Allow Notepad time to open
+    active_app = "notepad"
+    pyautogui.write(text, interval=0.1)
+
+def write_in_notepad(text):
+    """
+    Writes text in Notepad if Notepad is the active application.
+    """
+    if active_app == "notepad":
+        speak("Typing in Notepad...")
+        pyautogui.write(text, interval=0.1)
+    else:
+        speak("Notepad is not active. Please open Notepad first.")
+
+def create_folder(folder_name):
+    """Creates a new folder in the current directory."""
+    speak(f"Creating folder {folder_name}.")
+    try:
+        os.mkdir(folder_name)
+        speak(f"Folder {folder_name} created successfully.")
+    except FileExistsError:
+        speak("Folder already exists.")
+    except Exception as e:
+        speak("An error occurred while creating the folder.")
+
+def perform_action_in_active_app():
+    """
+    Performs a default action based on the active application.
+    For example, if Notepad is active, it types a default message.
+    If YouTube is active, it asks for a search query and updates the same tab.
+    """
+    global active_app
+    if active_app is None:
+        speak("No active application. Please open an application first.")
+    else:
+        if active_app == "notepad":
+            speak("Performing default action in Notepad.")
+            pyautogui.write("Default action executed in Notepad.", interval=0.1)
+        elif active_app == "youtube":
+            speak("What would you like to search on YouTube?")
+            query = listen_command()  # Get the search query via voice
+            if query:
+                search_youtube(query)
+            else:
+                speak("No search query provided.")
+        else:
+            speak(f"No default action is defined for {active_app}.")
+
+# --- NLP & Intent Recognition using spaCy ---
+
+def interpret_command_local(command):
+    """
+    Uses spaCy and fuzzy matching to determine the intent of the command.
+    Returns a simplified interpretation.
+    """
+    doc = nlp(command)
+    if any(token.lemma_ in ["open", "start", "launch"] for token in doc):
+        if "notepad" in command:
+            return "open notepad"
+        elif "folder" in command:
+            return "create folder"
+        elif "youtube" in command:
+            return "open youtube"
+        else:
+            words = command.split()
+            try:
+                idx = words.index("open")
+            except ValueError:
+                idx = 0
+            app_candidate = " ".join(words[idx+1:]).strip()
+            if not app_candidate:
+                return "open application"
+            known_apps = ["chrome", "calculator", "word", "excel", "whatsapp", "notepad", "spotify"]
+            best_match, score = process.extractOne(app_candidate, known_apps)
+            print(f"App candidate: '{app_candidate}' -> Best match: '{best_match}' (score: {score})")
+            if score > 60:
+                return f"open {best_match}"
+            else:
+                return f"open {app_candidate}"
+    elif "search" in command and "youtube" in command:
+        return "search youtube"
+    elif "increase" in command and "volume" in command:
+        return "increase volume"
+    elif "decrease" in command and "volume" in command:
+        return "decrease volume"
+    elif "increase" in command and "brightness" in command:
+        return "increase brightness"
+    elif "decrease" in command and "brightness" in command:
+        return "decrease brightness"
+    elif "exit" in command or "stop" in command:
+        return "exit"
+    elif command.lower().strip() in ["do this", "do that", "execute this", "run this"]:
+        return "active action"
+    elif command.startswith("write") or command.startswith("type"):
+        return "write"
+    else:
+        return "unknown command"
+
+def process_command(command):
+    """
+    Processes and executes commands intelligently using fuzzy matching,
+    context tracking, and local NLP interpretation.
+    """
+    possible_commands = ["open youtube", "search youtube", "open notepad", "create folder",
+                         "exit", "stop", "increase volume", "decrease volume",
+                         "increase brightness", "decrease brightness", "write", "active action"]
+    best_match, score = process.extractOne(command, possible_commands)
+    if score > 70:
+        command = best_match
+    local_interpretation = interpret_command_local(command)
+    print(f"Local interpretation: {local_interpretation}")
+    
+    if local_interpretation == "open youtube":
+        open_website("youtube")
+    elif local_interpretation == "search youtube":
+        query = command.replace("search youtube for", "").strip()
+        if query:
+            search_youtube(query)
+        else:
+            speak("I didn't catch the search query.")
+    elif local_interpretation == "open notepad":
+        open_notepad_and_write("CS2P is now smarter!")
+    elif local_interpretation == "create folder":
+        folder_name = command.split("create folder")[-1].strip()
+        create_folder(folder_name)
+    elif local_interpretation == "increase volume":
+        set_volume(80)
+    elif local_interpretation == "decrease volume":
+        set_volume(30)
+    elif local_interpretation == "increase brightness":
+        adjust_brightness(90)
+    elif local_interpretation == "decrease brightness":
+        adjust_brightness(40)
+    elif local_interpretation == "exit":
+        speak("Goodbye!")
+        exit(0)
+    elif local_interpretation == "write":
+        text_to_write = command.replace("write", "").replace("type", "").strip()
+        write_in_notepad(text_to_write)
+    elif local_interpretation == "active action":
+        perform_action_in_active_app()
+    elif local_interpretation.startswith("open "):
+        app_to_open = local_interpretation.replace("open ", "", 1).strip()
+        open_application(app_to_open)
+    else:
+        speak("I didn't quite understand. Could you repeat that differently?")
+
+def main():
+    speak("Hi, I am CS2P")
+    while True:
+        command = listen_command()
+        if command:
+            process_command(command)
+
+if __name__ == "__main__":
+    main()
